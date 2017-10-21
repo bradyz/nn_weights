@@ -30,6 +30,8 @@ class VanillaNetwork(object):
         self._losses()
 
         self.weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.scope)
+        self.saver = tf.train.Saver(self.weights)
+
 
     def _forward(self):
         net = self.image_op
@@ -77,15 +79,8 @@ class VanillaNetwork(object):
         self.losses = losses
 
     def ready_up(self, sess):
-        if self.save_path is None:
-            print('No save path provided.')
-            return
-
-        weights_dict = {key.name: key for key in self.weights}
-        saver = tf.train.Saver(weights_dict)
-
         try:
-            saver.restore(sess, self.save_path)
+            self.saver.restore(sess, self.save_path)
 
             print('Loaded weights successfully.')
         except Exception as e:
@@ -94,6 +89,14 @@ class VanillaNetwork(object):
 
             sess.run(tf.global_variables_initializer())
             sess.run(tf.local_variables_initializer())
+
+    def save(self, sess):
+        try:
+            self.saver.save(sess, self.save_path)
+            print('Saved to %s.' % self.save_path)
+        except Exception as e:
+            print(e)
+            print('Failed to save.')
 
 
 class Monitor(object):
@@ -118,7 +121,6 @@ class Monitor(object):
 
         self.summary_op = tf.cond(network.is_training_op, train, valid)
 
-
     def ready_up(self, sess):
         self.sess = sess
         self.summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
@@ -138,7 +140,7 @@ class Monitor(object):
             result += [tf.summary.scalar('learn_rate', self.trainer.learn_rate_op)]
 
         with tf.name_scope(scope):
-            result += [tf.summary.image('images', self.network.images_op, 10)]
+            result += [tf.summary.image('images', self.network.image_op, 10)]
 
             result += [tf.summary.scalar('accuracy',
                 tf.reduce_mean(
@@ -148,7 +150,9 @@ class Monitor(object):
                             self.network.labels_op))))]
 
             result += [tf.summary.scalar('accuracy_tf',
-                tf.metrics.accuracy(self.network.pred_op, self.network.labels_op))]
+                tf.metrics.accuracy(
+                    self.network.pred_op,
+                    self.network.labels_op)[0])]
 
             result += [tf.summary.image('confusion_matrix',
                 ops.confusion_image(

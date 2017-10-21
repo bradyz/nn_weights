@@ -39,18 +39,19 @@ def train(network, trainer, monitor, provider_train, provider_valid):
                 if coord.should_stop():
                     break
 
-                step = sess.run(step_op)
+                step = sess.run(trainer.step_op)
 
                 if step % config.checkpoint_steps == 0:
                     monitor.checkpoint(step)
 
                 if step % config.save_steps == 0:
-                    network.save()
+                    network.save(sess)
 
                 trainer.train(sess)
 
             coord.request_stop()
         except Exception as e:
+            print(e)
             coord.request_stop(e)
         finally:
             coord.join(threads)
@@ -70,17 +71,14 @@ def main():
             save_path=os.path.join(config.log_dir, config.model_name),
             labels_op=labels_op)
 
+    trainer = model.Trainer(network)
+    monitor = model.Monitor(network, trainer, config.log_dir)
+
     print('Network weights.')
     print('\n'.join(sorted(map(lambda x: x.name, network.weights))))
     print()
 
-    print('Weights to be saved.')
-    print('\n'.join(sorted(map(lambda x: x.name, saved_vars))))
-
-    train(provider_train, provider_valid,
-               step_op, train_op, summary_op, is_training_op,
-               saved_vars, save_path, config.Yearbook.log_dir,
-               network, network.restore)
+    train(network, trainer, monitor, provider_train, provider_valid)
 
 
 if __name__ == '__main__':

@@ -24,8 +24,8 @@ def _get_pairs(data_paths):
             images.extend(images_subset)
             labels.extend(labels_subset)
 
-    images = np.array(images)
-    labels = np.array(labels)
+    images = np.float32(images)
+    labels = np.int32(labels)
 
     return [images, labels]
 
@@ -48,11 +48,12 @@ class CifarDatagen(object):
         self._shapes = [input_shape, []]
 
     def __next__(self):
-        image, label = self.image_label[self.index]
+        image = self.image_label[0][self.index]
+        label = self.image_label[1][self.index]
 
-        self.index = (self.index + 1) % len(self.image_label)
+        self.index = (self.index + 1) % len(self.image_label[0])
 
-        return image, np.int32(label)
+        return image, label
 
     def __iter__(self):
         return self
@@ -63,7 +64,7 @@ class CifarDatagen(object):
     def get_shapes(self):
         return self._shapes
 
-    def augment_function(self, data_op):
+    def augment(self, data_op):
         if self.is_training:
             return data_op
 
@@ -79,7 +80,10 @@ class AsyncProvider(object):
             self.queue = tf.RandomShuffleQueue(cap, min_after, dtypes, shapes)
 
             data_op = tf.py_func(lambda: next(generator), [], dtypes)
-            data_op = generator.augment_data(data_op)
+            data_op = generator.augment(data_op)
+
+            for i, x_op in enumerate(data_op):
+                x_op.set_shape(shapes[i])
 
             enqueue_op = self.queue.enqueue(data_op)
 
