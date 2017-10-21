@@ -89,7 +89,7 @@ class AsyncProvider(object):
 
             self.runner = tf.train.QueueRunner(self.queue, [enqueue_op])
 
-            tf.summary.scalar('capacity', self.queue.size())
+        tf.summary.scalar('capacity/%s' % scope, self.queue.size())
 
     def get_inputs(self, batch_size):
         return self.queue.dequeue_many(batch_size)

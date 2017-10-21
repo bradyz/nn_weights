@@ -22,10 +22,9 @@ def get_inputs(provider_train, provider_valid, batch_size):
     return is_training_op, inputs_list
 
 
-def train(network, trainer, monitor, provider_train, provider_valid):
+def train(experiment, provider_train, provider_valid):
     with tf.Session() as sess:
-        network.ready_up(sess)
-        monitor.ready_up(sess)
+        experiment.ready_up(sess)
 
         # Multithreading.
         coord = tf.train.Coordinator()
@@ -39,15 +38,16 @@ def train(network, trainer, monitor, provider_train, provider_valid):
                 if coord.should_stop():
                     break
 
-                step = sess.run(trainer.step_op)
+                # Ugly please fix.
+                step = sess.run(experiment.trainers[0].step_op)
 
                 if step % config.checkpoint_steps == 0:
-                    monitor.checkpoint(step)
+                    experiment.checkpoint(step)
 
                 if step % config.save_steps == 0:
-                    network.save(sess)
+                    experiment.save(sess)
 
-                trainer.train(sess)
+                experiment.train(sess)
 
             coord.request_stop()
         except Exception as e:
@@ -67,18 +67,23 @@ def main():
     is_training_op, (images_op, labels_op) = get_inputs(
             provider_train, provider_valid, config.batch_size)
 
-    network = model.VanillaNetwork(images_op, config.num_classes, is_training_op,
-            save_path=os.path.join(config.log_dir, config.model_name),
-            labels_op=labels_op)
+    network1 = model.VanillaNetwork(images_op, config.num_classes, is_training_op,
+            256,
+            save_path=os.path.join(config.log_dir, config.model_name + '_1'),
+            labels_op=labels_op,
+            scope='Vanilla1')
 
-    trainer = model.Trainer(network)
-    monitor = model.Monitor(network, trainer, config.log_dir)
+    network2 = model.VanillaNetwork(images_op, config.num_classes, is_training_op,
+            32,
+            save_path=os.path.join(config.log_dir, config.model_name + '_2'),
+            labels_op=labels_op,
+            scope='Vanilla2')
 
-    print('Network weights.')
-    print('\n'.join(sorted(map(lambda x: x.name, network.weights))))
-    print()
+    experiment = model.Experiment(is_training_op, config.log_dir)
+    experiment.add(network1)
+    experiment.add(network2)
 
-    train(network, trainer, monitor, provider_train, provider_valid)
+    train(experiment, provider_train, provider_valid)
 
 
 if __name__ == '__main__':

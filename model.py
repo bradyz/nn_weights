@@ -4,13 +4,15 @@ import ops
 
 
 class VanillaNetwork(object):
-    def __init__(self, image_op, num_classes, is_training_op,
+    def __init__(self, image_op, num_classes, is_training_op, nodes,
                  save_path=None, labels_op=None, scope=None):
         self.image_op = image_op
         self.labels_op = labels_op
 
         self.num_classes = num_classes
         self.is_training_op = is_training_op
+
+        self.nodes = nodes
 
         self.scope = scope or 'VanillaNet'
 
@@ -32,18 +34,13 @@ class VanillaNetwork(object):
         self.weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.scope)
         self.saver = tf.train.Saver(self.weights)
 
-
     def _forward(self):
         net = self.image_op
 
         with tf.variable_scope(self.scope):
-            net = ops.down_block(net, 32, self.is_training_op, 'block1')
-            net = ops.down_block(net, 32, self.is_training_op, 'block2')
-            net = ops.down_block(net, 64, self.is_training_op, 'block3')
-            net = ops.down_block(net, 64, self.is_training_op, 'block4')
             net = ops.flatten(net)
-            net = ops.dense_block(net, 64, self.is_training_op, 'block5')
-            net = ops.dense_block(net, 64, self.is_training_op, 'block6')
+            net = ops.dense_block(net, self.nodes, self.is_training_op, 'block1')
+            net = ops.dense_block(net, self.nodes, self.is_training_op, 'block2')
             net = ops.dense_block(net, self.num_classes, self.is_training_op, 'logits',
                     activation=False)
 
@@ -83,7 +80,7 @@ class VanillaNetwork(object):
             self.saver.restore(sess, self.save_path)
 
             print('Loaded weights successfully.')
-        except Exception as e:
+        except tf.errors.NotFoundError as e:
             print(e)
             print('Failed to load weights. Reinitializing.')
 
@@ -97,69 +94,6 @@ class VanillaNetwork(object):
         except Exception as e:
             print(e)
             print('Failed to save.')
-
-
-class Monitor(object):
-    """
-    Network must have the following attributes:
-    - pred_op
-    - logits_op
-    """
-    def __init__(self, network, trainer, log_dir):
-        self.network = network
-        self.trainer = trainer
-
-        # Events file will be saved here.
-        self.log_dir = log_dir
-
-        # Initialized after session is created.
-        self.sess = None
-        self.summary_writer = None
-
-        train = lambda: self._make_summary(True, 'train')
-        valid = lambda: self._make_summary(False, 'valid')
-
-        self.summary_op = tf.cond(network.is_training_op, train, valid)
-
-    def ready_up(self, sess):
-        self.sess = sess
-        self.summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
-
-    def checkpoint(self, step):
-        train = self.sess.run(self.summary_op, {self.network.is_training_op: True})
-        valid = self.sess.run(self.summary_op, {self.network.is_training_op: False})
-
-        self.summary_writer.add_summary(train, step)
-        self.summary_writer.add_summary(valid, step)
-
-    def _make_summary(self, is_training, scope):
-        result = list()
-
-        if is_training:
-            result += tf.get_collection(tf.GraphKeys.SUMMARIES)
-            result += [tf.summary.scalar('learn_rate', self.trainer.learn_rate_op)]
-
-        with tf.name_scope(scope):
-            result += [tf.summary.image('images', self.network.image_op, 10)]
-
-            result += [tf.summary.scalar('accuracy',
-                tf.reduce_mean(
-                    tf.to_float(
-                        tf.equal(
-                            self.network.pred_op,
-                            self.network.labels_op))))]
-
-            result += [tf.summary.scalar('accuracy_tf',
-                tf.metrics.accuracy(
-                    self.network.pred_op,
-                    self.network.labels_op)[0])]
-
-            result += [tf.summary.image('confusion_matrix',
-                ops.confusion_image(
-                    self.network.pred_op, self.network.labels_op,
-                    self.network.num_classes))]
-
-        return tf.summary.merge(result)
 
 
 class Trainer(object):
@@ -209,3 +143,122 @@ class Trainer(object):
 
     def train(self, sess):
         sess.run(self.train_op, {self.network.is_training_op: True})
+
+
+class Monitor(object):
+    """
+    Network must have the following attributes:
+    - pred_op
+    - logits_op
+    """
+    def __init__(self, network, trainer, log_dir, prefix_scope=''):
+        self.network = network
+        self.trainer = trainer
+
+        # Events file will be saved here.
+        self.log_dir = log_dir
+
+        # Initialized after session is created.
+        self.sess = None
+        self.summary_writer = None
+
+        self.summary_train_op = self._make_summary(True, prefix_scope + 'train')
+        self.summary_valid_op = self._make_summary(False, prefix_scope + 'valid')
+        self.summary_op = tf.cond(network.is_training_op,
+                                  lambda: self.summary_train_op,
+                                  lambda: self.summary_valid_op)
+
+    def ready_up(self, sess):
+        self.sess = sess
+        self.summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
+
+    def checkpoint(self, step):
+        train = self.sess.run(self.summary_op, {self.network.is_training_op: True})
+        valid = self.sess.run(self.summary_op, {self.network.is_training_op: False})
+
+        self.summary_writer.add_summary(train, step)
+        self.summary_writer.add_summary(valid, step)
+
+    def _make_summary(self, is_training, scope):
+        result = list()
+
+        # # So duplicates don't get caught.
+        # result += tf.get_collection(tf.GraphKeys.SUMMARIES)
+        # tf.get_collection_ref(tf.GraphKeys.SUMMARIES).clear()
+
+        if is_training:
+            result += [tf.summary.scalar('%s/learn_rate' % scope, self.trainer.learn_rate_op)]
+
+        with tf.name_scope(scope):
+            result += [tf.summary.image('images', self.network.image_op, 10)]
+
+            result += [tf.summary.scalar('accuracy',
+                tf.reduce_mean(
+                    tf.to_float(
+                        tf.equal(
+                            self.network.pred_op,
+                            self.network.labels_op))))]
+
+            result += [tf.summary.image('confusion_matrix',
+                ops.confusion_image(
+                    self.network.pred_op, self.network.labels_op,
+                    self.network.num_classes))]
+
+        return tf.summary.merge(result)
+
+
+class Experiment(object):
+    def __init__(self, is_training_op, log_dir):
+        self.is_training_op = is_training_op
+        self.log_dir = log_dir
+
+        self.networks = list()
+        self.trainers = list()
+        self.monitors = list()
+
+        # Populated after ready_up.
+        self.sess = None
+        self.summary_writer = None
+
+        self.train_op = None
+        self.summary_op = None
+
+    def add(self, network):
+        trainer = Trainer(network)
+        monitor = Monitor(network, trainer, '_unused', 'experiment_%d/' % len(self.networks))
+
+        self.networks.append(network)
+        self.trainers.append(trainer)
+        self.monitors.append(monitor)
+
+    def ready_up(self, sess):
+        self.sess = sess
+        self.summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
+
+        # Combine all the summaries.
+        summary_train_op = tf.summary.merge([x.summary_train_op for x in self.monitors])
+        summary_valid_op = tf.summary.merge([x.summary_valid_op for x in self.monitors])
+
+        self.summary_op = tf.cond(self.is_training_op,
+                                  lambda: summary_train_op,
+                                  lambda: summary_valid_op)
+
+        # Combine all the train steps.
+        self.train_op = tf.group(*[trainer.train_op for trainer in self.trainers])
+
+        for i in range(len(self.networks)):
+            self.networks[i].ready_up(sess)
+
+    def train(self, sess):
+        sess.run(self.train_op, {self.is_training_op: True})
+
+    def checkpoint(self, step):
+        train = self.sess.run(self.summary_op, {self.is_training_op: True})
+        valid = self.sess.run(self.summary_op, {self.is_training_op: False})
+
+        self.summary_writer.add_summary(train, step)
+        self.summary_writer.add_summary(valid, step)
+
+    def save(self, sess):
+        for network in self.networks:
+            network.save(sess)
