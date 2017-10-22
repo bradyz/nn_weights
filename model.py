@@ -63,7 +63,7 @@ class VanillaNetwork(object):
                         labels=self.labels_op))
 
             reg_loss_op = alpha * tf.reduce_sum(
-                    tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
+                    tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES, self.scope))
 
             loss_op = xent_loss_op + reg_loss_op
 
@@ -96,6 +96,59 @@ class VanillaNetwork(object):
             print('Failed to save.')
 
 
+class DecompNetwork(VanillaNetwork):
+    def _forward(self):
+        net = self.image_op
+
+        with tf.variable_scope(self.scope):
+            net = ops.flatten(net)
+            net = ops.my_dense_block(net, self.nodes, self.is_training_op, 'block1')
+            net = ops.my_dense_block(net, self.nodes, self.is_training_op, 'block2')
+            net = ops.my_dense_block(net, self.num_classes, self.is_training_op, 'logits',
+                    activation=False)
+
+        with tf.name_scope('predictions'):
+            pred_op = tf.cast(tf.argmax(tf.nn.softmax(net), axis=-1), tf.int32)
+
+        # Actually populated.
+        self.logits_op = net
+        self.pred_op = pred_op
+
+    def _losses(self, alpha=5e-5, beta=0.0):
+        # No labels means no losses.
+        if self.labels_op is None:
+            return
+
+        with tf.name_scope('loss'):
+            xent_loss_op = tf.reduce_mean(
+                    tf.nn.sparse_softmax_cross_entropy_with_logits(
+                        logits=self.logits_op,
+                        labels=self.labels_op))
+
+            reg_loss_op = alpha * tf.reduce_sum(
+                    tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES, self.scope))
+
+            lambda_loss_op = 0.0
+
+            for v_op in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.scope):
+                if 'dense/v' not in v_op.name:
+                    continue
+
+                v_op = tf.square(v_op)
+                lambda_loss_op += beta * (tf.reduce_max(v_op) - tf.reduce_min(v_op))
+
+            loss_op = xent_loss_op + reg_loss_op + lambda_loss_op
+
+        losses = dict()
+        losses['xent'] = xent_loss_op
+        losses['reg'] = reg_loss_op
+        losses['lambda'] = lambda_loss_op
+
+        # Actually populated.
+        self.loss_op = loss_op
+        self.losses = losses
+
+
 class Trainer(object):
     """
     Network must have the following methods:
@@ -125,7 +178,8 @@ class Trainer(object):
             step_op = tf.Variable(0, name='step', trainable=False)
             learn_rate_op = tf.train.piecewise_constant(step_op, bounds, values)
 
-            optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
+            # optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
+            optimizer_op = tf.train.MomentumOptimizer(learn_rate_op, 0.9)
 
             with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
                 grad_var_op = optimizer_op.compute_gradients(
@@ -186,18 +240,17 @@ class Monitor(object):
         # result += tf.get_collection(tf.GraphKeys.SUMMARIES)
         # tf.get_collection_ref(tf.GraphKeys.SUMMARIES).clear()
 
-        if is_training:
-            result += [tf.summary.scalar('%s/learn_rate' % scope, self.trainer.learn_rate_op)]
-
         with tf.name_scope(scope):
+            if is_training:
+                result += [tf.summary.scalar('learn_rate', self.trainer.learn_rate_op)]
+
+                for loss_name, loss_op in self.network.losses.items():
+                    result += [tf.summary.scalar(loss_name, loss_op)]
+
             result += [tf.summary.image('images', self.network.image_op, 10)]
 
             result += [tf.summary.scalar('accuracy',
-                tf.reduce_mean(
-                    tf.to_float(
-                        tf.equal(
-                            self.network.pred_op,
-                            self.network.labels_op))))]
+                ops.accuracy(self.network.pred_op, self.network.labels_op))]
 
             result += [tf.summary.image('confusion_matrix',
                 ops.confusion_image(

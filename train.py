@@ -47,6 +47,16 @@ def train(experiment, provider_train, provider_valid):
                 if step % config.save_steps == 0:
                     experiment.save(sess)
 
+                if step % 200 == 0:
+                    decomp_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'Decomp1')
+                    decomp_vars = [x for x in decomp_vars if 'dense/v' in x.name]
+
+                    for var in decomp_vars:
+                        tmp = sess.run(var)
+                        tmp = tmp * tmp
+
+                        print(tmp.max() / tmp.min(), tmp.min(), tmp.max())
+
                 experiment.train(sess)
 
             coord.request_stop()
@@ -67,6 +77,8 @@ def main():
     is_training_op, (images_op, labels_op) = get_inputs(
             provider_train, provider_valid, config.batch_size)
 
+    images_op = ((images_op / 255.0) - 0.5) * 2.0
+
     network1 = model.VanillaNetwork(images_op, config.num_classes, is_training_op,
             256,
             save_path=os.path.join(config.log_dir, config.model_name + '_1'),
@@ -79,9 +91,16 @@ def main():
             labels_op=labels_op,
             scope='Vanilla2')
 
+    network3 = model.DecompNetwork(images_op, config.num_classes, is_training_op,
+            256,
+            save_path=os.path.join(config.log_dir, config.model_name + '_3'),
+            labels_op=labels_op,
+            scope='Decomp1')
+
     experiment = model.Experiment(is_training_op, config.log_dir)
     experiment.add(network1)
     experiment.add(network2)
+    experiment.add(network3)
 
     train(experiment, provider_train, provider_valid)
 

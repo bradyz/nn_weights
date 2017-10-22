@@ -4,7 +4,7 @@ import glob
 
 input_shape = [32, 32, 3]
 
-batch_size = 128
+batch_size = 256
 num_classes = 10
 
 checkpoint_steps = 100
