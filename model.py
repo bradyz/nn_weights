@@ -1,317 +1,81 @@
 import tensorflow as tf
 
+from tensorpack import *
+from tensorpack.tfutils.summary import add_moving_summary, add_param_summary
+from tensorpack.tfutils.gradproc import SummaryGradient
+
 import ops
 
 
-class VanillaNetwork(object):
-    def __init__(self, image_op, num_classes, is_training_op, nodes,
-                 save_path=None, labels_op=None, scope=None):
-        self.image_op = image_op
-        self.labels_op = labels_op
-
-        self.num_classes = num_classes
-        self.is_training_op = is_training_op
+INPUT_SHAPE = 32
 
-        self.nodes = nodes
-
-        self.scope = scope or 'VanillaNet'
 
-        # If save path None, will not load or save anything.
-        self.save_path = save_path
-
-        # To be populated.
-        self.logits_op = None
-        self.pred_op = None
-
-        # Will be none if labels are not provided.
-        self.loss_op = None
-        self.losses = dict()
-
-        # Populate missing attributes.
-        self._forward()
-        self._losses()
+def feed_forward(l, scope, num_classes=10, growth=16, net=None):
+    net = net or dict()
 
-        self.weights = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, self.scope)
-        self.saver = tf.train.Saver(self.weights)
-
-    def _forward(self):
-        net = self.image_op
-
-        with tf.variable_scope(self.scope):
-            net = ops.flatten(net)
-            net = ops.dense_block(net, self.nodes, self.is_training_op, 'block1')
-            net = ops.dense_block(net, self.nodes, self.is_training_op, 'block2')
-            net = ops.dense_block(net, self.num_classes, self.is_training_op, 'logits',
-                    activation=False)
+    with tf.variable_scope(scope):
+        l = ((l / 255.0) - 0.5) * 2.0
 
-        with tf.name_scope('predictions'):
-            pred_op = tf.cast(tf.argmax(tf.nn.softmax(net), axis=-1), tf.int32)
+        l = ops.conv('conv1_1', l, growth, net=net)
+        l = ops.conv('conv1_2', l, growth, stride=2, net=net)
 
-        # Actually populated.
-        self.logits_op = net
-        self.pred_op = pred_op
+        l = ops.conv('conv2_1', l, growth * 2, net=net)
+        l = ops.conv('conv2_2', l, growth * 2, stride=2, net=net)
 
-    def _losses(self, alpha=5e-5):
-        # No labels means no losses.
-        if self.labels_op is None:
-            return
+        l = ops.conv('conv3_1', l, growth * 4, net=net)
+        l = ops.conv('conv3_2', l, growth * 4, stride=2, net=net)
 
-        with tf.name_scope('loss'):
-            xent_loss_op = tf.reduce_mean(
-                    tf.nn.sparse_softmax_cross_entropy_with_logits(
-                        logits=self.logits_op,
-                        labels=self.labels_op))
+        l = ops.conv('conv4_1', l, growth * 8, net=net)
+        l = ops.conv('conv4_2', l, growth * 8, stride=2, net=net)
 
-            reg_loss_op = alpha * tf.reduce_sum(
-                    tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES, self.scope))
-
-            loss_op = xent_loss_op + reg_loss_op
-
-        losses = dict()
-        losses['xent'] = xent_loss_op
-        losses['reg'] = reg_loss_op
+        l = AvgPooling('pool', l, 2)
+        l = ops.fully_connected('fc1', l, 256, net)
+        l = ops.fully_connected('fc2', l, 256, net)
+        l = ops.fully_connected('logits', l, num_classes, net)
 
-        # Actually populated.
-        self.loss_op = loss_op
-        self.losses = losses
+    return l, net
 
-    def ready_up(self, sess):
-        try:
-            self.saver.restore(sess, self.save_path)
 
-            print('Loaded weights successfully.')
-        except tf.errors.NotFoundError as e:
-            print(e)
-            print('Failed to load weights. Reinitializing.')
+def get_loss(labels, logits, scope, alpha=5e-5):
+    with tf.name_scope('%s/loss' % scope):
+        xent_loss = tf.reduce_mean(
+                tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    labels=labels, logits=logits), name='xent')
+        reg_loss = tf.multiply(
+                alpha, regularize_cost('.*/W', tf.nn.l2_loss), name='reg')
+        total_loss = tf.add(xent_loss, reg_loss, name='total')
 
-            sess.run(tf.global_variables_initializer())
-            sess.run(tf.local_variables_initializer())
+        # Tensorboard
+        add_moving_summary(xent_loss)
+        add_moving_summary(reg_loss)
+        add_moving_summary(total_loss)
 
-    def save(self, sess):
-        try:
-            self.saver.save(sess, self.save_path)
-            print('Saved to %s.' % self.save_path)
-        except Exception as e:
-            print(e)
-            print('Failed to save.')
-
+    return total_loss
 
-class DecompNetwork(VanillaNetwork):
-    def _forward(self):
-        net = self.image_op
 
-        with tf.variable_scope(self.scope):
-            net = ops.flatten(net)
-            net = ops.my_dense_block(net, self.nodes, self.is_training_op, 'block1')
-            net = ops.my_dense_block(net, self.nodes, self.is_training_op, 'block2')
-            net = ops.my_dense_block(net, self.num_classes, self.is_training_op, 'logits',
-                    activation=False)
-
-        with tf.name_scope('predictions'):
-            pred_op = tf.cast(tf.argmax(tf.nn.softmax(net), axis=-1), tf.int32)
-
-        # Actually populated.
-        self.logits_op = net
-        self.pred_op = pred_op
-
-    def _losses(self, alpha=5e-5, beta=0.0):
-        # No labels means no losses.
-        if self.labels_op is None:
-            return
-
-        with tf.name_scope('loss'):
-            xent_loss_op = tf.reduce_mean(
-                    tf.nn.sparse_softmax_cross_entropy_with_logits(
-                        logits=self.logits_op,
-                        labels=self.labels_op))
-
-            reg_loss_op = alpha * tf.reduce_sum(
-                    tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES, self.scope))
-
-            lambda_loss_op = 0.0
-
-            for v_op in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.scope):
-                if 'dense/v' not in v_op.name:
-                    continue
-
-                v_op = tf.square(v_op)
-                lambda_loss_op += beta * (tf.reduce_max(v_op) - tf.reduce_min(v_op))
-
-            loss_op = xent_loss_op + reg_loss_op + lambda_loss_op
-
-        losses = dict()
-        losses['xent'] = xent_loss_op
-        losses['reg'] = reg_loss_op
-        losses['lambda'] = lambda_loss_op
-
-        # Actually populated.
-        self.loss_op = loss_op
-        self.losses = losses
+class Network(ModelDesc):
+    def __init__(self, scope):
+        super().__init__()
 
-
-class Trainer(object):
-    """
-    Network must have the following methods:
-    - is_training_op
-    - loss_op
-    - weights
-    """
-    def __init__(self, network, scope=None):
-        self.network = network
+        self.scope = scope
 
-        self.scope = scope or 'Trainer'
+    def _get_inputs(self):
+        return [InputDesc(tf.float32, [None, INPUT_SHAPE, INPUT_SHAPE, 3], 'input1'),
+                InputDesc(tf.int32, [None], 'label')]
 
-        # To be populated in _initialize().
-        self.step_op = None
-        self.learn_rate_op = None
-        self.grad_var_op = None
-        self.train_op = None
+    def _build_graph(self, inputs):
+        image, label = inputs
+        logits, _ = feed_forward(image, self.scope)
+        loss = get_loss(label, logits, self.scope)
 
-        self._initialize()
+        tf.summary.image('image/input', tf.cast(image, tf.uint8), 5)
 
-    def _initialize(self):
-        # TODO(bradyz): put somewhere better.
-        bounds = [50000, 100000]
-        values = [2e-3, 1e-3, 1e-4]
+        self.cost = loss
 
-        with tf.variable_scope(self.scope):
-            step_op = tf.Variable(0, name='step', trainable=False)
-            learn_rate_op = tf.train.piecewise_constant(step_op, bounds, values)
+    def _get_optimizer(self):
+        learn_rate_op = tf.Variable(1e-4, trainable=False, name='learning_rate')
+        optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
 
-            # optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
-            optimizer_op = tf.train.MomentumOptimizer(learn_rate_op, 0.9)
+        tf.summary.scalar('learn rate', learn_rate_op)
 
-            with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
-                grad_var_op = optimizer_op.compute_gradients(
-                        self.network.loss_op,
-                        var_list=self.network.weights)
-
-                train_op = optimizer_op.apply_gradients(
-                        grad_var_op, global_step=step_op)
-
-        # Actually populated.
-        self.step_op = step_op
-        self.learn_rate_op = learn_rate_op
-        self.grad_var_op = grad_var_op
-        self.train_op = train_op
-
-    def train(self, sess):
-        sess.run(self.train_op, {self.network.is_training_op: True})
-
-
-class Monitor(object):
-    """
-    Network must have the following attributes:
-    - pred_op
-    - logits_op
-    """
-    def __init__(self, network, trainer, log_dir, prefix_scope=''):
-        self.network = network
-        self.trainer = trainer
-
-        # Events file will be saved here.
-        self.log_dir = log_dir
-
-        # Initialized after session is created.
-        self.sess = None
-        self.summary_writer = None
-
-        self.summary_train_op = self._make_summary(True, prefix_scope + 'train')
-        self.summary_valid_op = self._make_summary(False, prefix_scope + 'valid')
-        self.summary_op = tf.cond(network.is_training_op,
-                                  lambda: self.summary_train_op,
-                                  lambda: self.summary_valid_op)
-
-    def ready_up(self, sess):
-        self.sess = sess
-        self.summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
-
-    def checkpoint(self, step):
-        train = self.sess.run(self.summary_op, {self.network.is_training_op: True})
-        valid = self.sess.run(self.summary_op, {self.network.is_training_op: False})
-
-        self.summary_writer.add_summary(train, step)
-        self.summary_writer.add_summary(valid, step)
-
-    def _make_summary(self, is_training, scope):
-        result = list()
-
-        # # So duplicates don't get caught.
-        # result += tf.get_collection(tf.GraphKeys.SUMMARIES)
-        # tf.get_collection_ref(tf.GraphKeys.SUMMARIES).clear()
-
-        with tf.name_scope(scope):
-            if is_training:
-                result += [tf.summary.scalar('learn_rate', self.trainer.learn_rate_op)]
-
-                for loss_name, loss_op in self.network.losses.items():
-                    result += [tf.summary.scalar(loss_name, loss_op)]
-
-            result += [tf.summary.image('images', self.network.image_op, 10)]
-
-            result += [tf.summary.scalar('accuracy',
-                ops.accuracy(self.network.pred_op, self.network.labels_op))]
-
-            result += [tf.summary.image('confusion_matrix',
-                ops.confusion_image(
-                    self.network.pred_op, self.network.labels_op,
-                    self.network.num_classes))]
-
-        return tf.summary.merge(result)
-
-
-class Experiment(object):
-    def __init__(self, is_training_op, log_dir):
-        self.is_training_op = is_training_op
-        self.log_dir = log_dir
-
-        self.networks = list()
-        self.trainers = list()
-        self.monitors = list()
-
-        # Populated after ready_up.
-        self.sess = None
-        self.summary_writer = None
-
-        self.train_op = None
-        self.summary_op = None
-
-    def add(self, network):
-        trainer = Trainer(network)
-        monitor = Monitor(network, trainer, '_unused', 'experiment_%d/' % len(self.networks))
-
-        self.networks.append(network)
-        self.trainers.append(trainer)
-        self.monitors.append(monitor)
-
-    def ready_up(self, sess):
-        self.sess = sess
-        self.summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
-
-        # Combine all the summaries.
-        summary_train_op = tf.summary.merge([x.summary_train_op for x in self.monitors])
-        summary_valid_op = tf.summary.merge([x.summary_valid_op for x in self.monitors])
-
-        self.summary_op = tf.cond(self.is_training_op,
-                                  lambda: summary_train_op,
-                                  lambda: summary_valid_op)
-
-        # Combine all the train steps.
-        self.train_op = tf.group(*[trainer.train_op for trainer in self.trainers])
-
-        for i in range(len(self.networks)):
-            self.networks[i].ready_up(sess)
-
-    def train(self, sess):
-        sess.run(self.train_op, {self.is_training_op: True})
-
-    def checkpoint(self, step):
-        train = self.sess.run(self.summary_op, {self.is_training_op: True})
-        valid = self.sess.run(self.summary_op, {self.is_training_op: False})
-
-        self.summary_writer.add_summary(train, step)
-        self.summary_writer.add_summary(valid, step)
-
-    def save(self, sess):
-        for network in self.networks:
-            network.save(sess)
+        return optimizer_op
