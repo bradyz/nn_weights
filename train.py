@@ -18,11 +18,18 @@ def get_data(is_train, batch_size):
 
     if is_train:
         augmentors += [
-                imgaug.CenterPaste((40, 40)),
-                imgaug.RandomCrop((32, 32)),
-                imgaug.Flip(horiz=True)]
+                # imgaug.CenterPaste((40, 40)),
+                # imgaug.RandomCrop((32, 32)),
+                imgaug.Flip(horiz=True),
+                # imgaug.Brightness(10, clip=True),
+                # imgaug.GaussianNoise(),
+                # imgaug.Contrast((0.9, 1.1), clip=True),
+                # imgaug.Saturation(0.2),
+                # imgaug.SaltPepperNoise(),
+            ]
 
     data = AugmentImageComponent(data, augmentors)
+    data = RepeatedDataPoint(data, 3)
     data = BatchData(data, batch_size, remainder=not is_train)
 
     if is_train:
@@ -31,14 +38,14 @@ def get_data(is_train, batch_size):
     return data
 
 
-def get_config(batch_size=256):
+def get_config(batch_size=128):
     dataset_train = get_data(True, batch_size)
     dataset_valid = get_data(False, batch_size)
 
     return TrainConfig(
         dataflow=dataset_train,
         callbacks=[
-            # ops.VisualizeTestSet(dataset_valid),
+            ops.ValidationCallback(dataset_valid),
             ModelSaver(3),
             ScheduledHyperParamSetter(
                 'learning_rate', [
@@ -47,8 +54,8 @@ def get_config(batch_size=256):
                     (250, 2e-4),
                     (500, 1e-4),
                 ])],
-        model=model.Network('Vanilla'),
-        steps_per_epoch=1000,
+        model=model.Network(),
+        steps_per_epoch=250,
         max_epoch=1000,
         session_init=TryResumeTraining()
     )
