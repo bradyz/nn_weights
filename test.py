@@ -4,24 +4,6 @@ import numpy as np
 import ops
 
 
-def make_R_householder(u, eps=1e-12):
-    n = int(u.shape[0])
-
-    u = u / tf.norm(u + eps)
-    u = tf.expand_dims(u, 1)
-
-    M = tf.eye(n) - 2.0 * tf.matmul(u, tf.transpose(u))
-    M = tf.concat([M[:,:-1], -M[:,-1:]], axis=1)
-
-    return M
-
-
-def make_R_householder(A, eps=1e-12):
-    """u is a skew symmetric matrix"""
-
-    return M
-
-
 def make_S(v, input_size, output_size):
     n = int(v.shape[0])
 

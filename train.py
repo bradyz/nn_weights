@@ -10,9 +10,12 @@ import model
 import ops
 
 
-def get_data(is_train, batch_size):
+def get_data(is_train, batch_size, num_samples=None):
     data = dataset.Cifar10('train' if is_train else 'test')
     mean = data.get_per_pixel_mean()
+
+    if num_samples is not None:
+        data = DataFromList(data.data[:num_samples], shuffle=False)
 
     augmentors = [imgaug.MapImage(lambda x: x - mean)]
 
@@ -29,7 +32,10 @@ def get_data(is_train, batch_size):
             ]
 
     data = AugmentImageComponent(data, augmentors)
-    data = RepeatedDataPoint(data, 3)
+
+    if is_train:
+        data = RepeatedDataPoint(data, 3)
+
     data = BatchData(data, batch_size, remainder=not is_train)
 
     if is_train:
@@ -38,7 +44,7 @@ def get_data(is_train, batch_size):
     return data
 
 
-def get_config(batch_size=128):
+def get_config(restore_path=None, batch_size=128):
     dataset_train = get_data(True, batch_size)
     dataset_valid = get_data(False, batch_size)
 
@@ -55,16 +61,37 @@ def get_config(batch_size=128):
                     (500, 1e-4),
                 ])],
         model=model.Network(),
-        steps_per_epoch=250,
+        steps_per_epoch=1000,
+        max_epoch=1000,
+        session_init=TryResumeTraining() if not restore_path else SaverRestore(restore_path)
+    )
+
+
+def get_init_config(batch_size=32):
+    dataset_train = get_data(True, batch_size, 16)
+    dataset_valid = get_data(False, batch_size, 16)
+    network = model.Pretrain()
+
+    return TrainConfig(
+        dataflow=dataset_train,
+        callbacks=[
+            ops.InitializationCallback(dataset_valid, network),
+            ModelSaver(1),
+            ScheduledHyperParamSetter(
+                'learning_rate', [
+                    (1, 1e-4)
+                ])],
+        model=network,
+        steps_per_epoch=1000,
         max_epoch=1000,
         session_init=TryResumeTraining()
     )
 
 
-def main(log_dir):
+def main(initialize, log_dir, restore_path):
     logger.set_logger_dir(log_dir)
 
-    config = get_config()
+    config = get_init_config() if initialize else get_config(restore_path)
     trainer = QueueInputTrainer()
 
     launch_train_with_config(config, trainer)
@@ -75,10 +102,15 @@ if __name__ == '__main__':
     tf.set_random_seed(0)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--initialize', dest='initialize', action='store_true')
     parser.add_argument('--log')
+    parser.add_argument('--restore_path', default=None)
+    parser.set_defaults(initialize=False)
 
     args = parser.parse_args()
 
+    initialize = args.initialize
     log_dir = args.log
+    restore_path = args.restore_path
 
-    main(log_dir)
+    main(initialize, log_dir, restore_path)
