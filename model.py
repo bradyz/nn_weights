@@ -8,6 +8,7 @@ from tensorpack.tfutils.gradproc import ScaleGradient, SummaryGradient
 from tensorpack.tfutils import optimizer
 
 import ops
+import settings
 
 
 INPUT_SHAPE = 32
@@ -38,14 +39,16 @@ def feed_forward(l, fancy, num_classes=10, growth=12, net=None):
     l = layer('conv3_2', l, growth * 4, 3, net=net)
 
     l = GlobalAvgPooling('pool', l)
-    l = tf.expand_dims(l, 1)
-    l = tf.expand_dims(l, 1)
-
-    l = layer('fc_1', l, growth * 8, 1, net=net)
-    l = layer('fc_2', l, growth * 8, 1, net=net)
-
-    l = tf.squeeze(l, 1)
-    l = tf.squeeze(l, 1)
+    # l = tf.expand_dims(l, 1)
+    # l = tf.expand_dims(l, 1)
+    #
+    # l = layer('fc_1', l, growth * 8, 1, net=net)
+    # l = layer('fc_2', l, growth * 8, 1, net=net)
+    #
+    # l = tf.squeeze(l, 1)
+    # l = tf.squeeze(l, 1)
+    l = ops.fully_connected('fc_1', l, growth * 8, net=net)
+    l = ops.fully_connected('fc_2', l, growth * 8, net=net)
     l = ops.fully_connected('logits', l, num_classes, net=net)
 
     return l, net
@@ -60,14 +63,15 @@ def get_loss(labels, logits, scope, alpha=5e-5):
                 alpha, regularize_cost('%s/.*/W' % scope, tf.nn.l2_loss), name='reg')
         total_loss = tf.add(xent_loss, reg_loss, name='total')
 
-        # Tensorboard
+    with tf.name_scope('metrics'):
+        prediction = tf.cast(tf.argmax(logits, -1), tf.int32)
+        accuracy = tf.reduce_mean(tf.to_float(tf.equal(prediction, labels)), name='accuracy')
+
         add_moving_summary(xent_loss)
         add_moving_summary(reg_loss)
         add_moving_summary(total_loss)
 
-    with tf.name_scope('metrics'):
-        prediction = tf.cast(tf.argmax(logits, -1), tf.int32)
-        accuracy = tf.reduce_mean(tf.to_float(tf.equal(prediction, labels)), name='accuracy')
+        add_moving_summary(accuracy)
 
     return total_loss
 
@@ -103,7 +107,7 @@ class Network(ModelDesc):
 
         # Vanilla.
         with tf.variable_scope('Vanilla'):
-            logits_vanilla, _ = feed_forward(image, False)
+            logits_vanilla, net_vanilla = feed_forward(image, False)
             loss_vanilla = get_loss(label, logits_vanilla, 'Vanilla')
 
         # # Fancy.
@@ -112,11 +116,13 @@ class Network(ModelDesc):
         #     loss_fancy = get_loss(label, logits_fancy, 'Fancy')
 
         # self.cost = loss_vanilla + loss_fancy
+        self.weights = get_weights('Vanilla/conv1_1/W') + get_weights('Vanilla/conv1_2/W')
+        self.net = net_vanilla
         self.cost = loss_vanilla
 
     def _get_optimizer(self):
         learn_rate_op = tf.Variable(0.0, trainable=False, name='learning_rate')
-        optimizer_op = tf.train.AdamOptimizer(learn_rate_op)
+        optimizer_op = settings.optimizer(learn_rate_op)
 
         tf.summary.scalar('learn_rate', learn_rate_op)
 
@@ -137,8 +143,6 @@ class Pretrain(ModelDesc):
         self.weights = get_weights('Vanilla/conv1_1/W') + get_weights('Vanilla/conv1_2/W')
         self.net = net
         self.cost = kmeans_loss
-
-        # add_param_summary(('.*', ['histogram', 'rms']))
 
     def _get_optimizer(self):
         learn_rate_op = tf.Variable(0.0, trainable=False, name='learning_rate')

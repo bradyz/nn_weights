@@ -8,6 +8,7 @@ from tensorpack.dataflow import dataset
 
 import model
 import ops
+import settings
 
 
 def get_data(is_train, batch_size, num_samples=None):
@@ -48,21 +49,23 @@ def get_config(restore_path=None, batch_size=128):
     dataset_train = get_data(True, batch_size)
     dataset_valid = get_data(False, batch_size)
 
+    network = model.Network()
+
     return TrainConfig(
         dataflow=dataset_train,
         callbacks=[
             ops.ValidationCallback(dataset_valid),
-            ModelSaver(3),
+            ops.InitializationCallback(dataset_valid, network),
+            # ModelSaver(3),
             ScheduledHyperParamSetter(
                 'learning_rate', [
-                    (1, 2e-3),
-                    (100, 1e-3),
-                    (250, 2e-4),
-                    (500, 1e-4),
+                    (1, 1e-3),
+                    (50, 1e-4),
+                    (100, 1e-5),
                 ])],
-        model=model.Network(),
+        model=network,
         steps_per_epoch=1000,
-        max_epoch=1000,
+        max_epoch=150,
         session_init=TryResumeTraining() if not restore_path else SaverRestore(restore_path)
     )
 
@@ -97,20 +100,34 @@ def main(initialize, log_dir, restore_path):
     launch_train_with_config(config, trainer)
 
 
+def train_all():
+    for x, nonlinearity in settings.nonlinearities.items():
+        for y, initializer in settings.initializers.items():
+            for z, optimizer in settings.optimizers.items():
+                settings.nonlinearity = nonlinearity
+                settings.initializer = initializer
+                settings.optimizer = optimizer
+
+                with tf.Graph().as_default():
+                    main(False, 'log_init/%s_%s_%s' % (x, y, z), None)
+
+
 if __name__ == '__main__':
     np.random.seed(0)
     tf.set_random_seed(0)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--initialize', dest='initialize', action='store_true')
-    parser.add_argument('--log')
-    parser.add_argument('--restore_path', default=None)
-    parser.set_defaults(initialize=False)
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--initialize', dest='initialize', action='store_true')
+    # parser.add_argument('--log')
+    # parser.add_argument('--restore_path', default=None)
+    # parser.set_defaults(initialize=False)
+    #
+    # args = parser.parse_args()
+    #
+    # initialize = args.initialize
+    # log_dir = args.log
+    # restore_path = args.restore_path
+    #
+    # main(initialize, log_dir, restore_path)
 
-    args = parser.parse_args()
-
-    initialize = args.initialize
-    log_dir = args.log
-    restore_path = args.restore_path
-
-    main(initialize, log_dir, restore_path)
+    train_all()
